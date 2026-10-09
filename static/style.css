@@ -8,3 +8,8 @@
 @media(max-width:700px){.live-toolbar{align-items:stretch;flex-direction:column}.live-toolbar .button{width:100%}.live-voice-setting{margin-left:0;width:100%}.live-status-wrap{min-height:24px}.live-entry-translations{grid-template-columns:1fr}.live-entry-translation+ .live-entry-translation{border-left:0;border-top:1px solid #293342}.live-caption-panel p{font-size:15px}.live-caption-top{align-items:flex-start;flex-direction:column;gap:5px}#live-caption-state{text-align:left}}
 
 .live-audio-control{width:135px;max-width:42%;height:28px}
+
+/* Solai standalone brand assets */
+.brand { gap: 11px; }
+.brand-logo { display:block; width:42px; height:42px; flex:0 0 42px; border-radius:12px; }
+.brand strong { letter-spacing:-.035em; }

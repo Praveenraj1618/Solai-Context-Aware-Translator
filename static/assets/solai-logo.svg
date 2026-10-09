@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title">
+<title id="title">Solai logo mark</title>
+<defs><linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#9CEB43"/><stop offset=".55" stop-color="#24B875"/><stop offset="1" stop-color="#007C68"/></linearGradient><linearGradient id="sun" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFE27A"/><stop offset="1" stop-color="#F5B52E"/></linearGradient></defs>
+<circle cx="160" cy="160" r="148" fill="#063B35"/><circle cx="190" cy="124" r="76" fill="url(#sun)"/>
+<path d="M52 230C32 170 53 94 128 49c19-11 40-19 63-24-8 44-27 75-56 105-33 34-47 68-42 110-15-1-29-4-41-10Z" fill="url(#leaf)"/>
+<path d="M71 242c38-67 83-94 126-95-17 21-32 39-43 60-14 27-23 48-24 75-22-6-42-19-59-40Z" fill="#0B8B71"/><path d="M65 238c48-10 80-4 119 23-40 16-79 12-119-23Z" fill="#4BCB72"/><path d="M118 55c-31 41-49 85-49 130" fill="none" stroke="#C8F78B" stroke-width="5" stroke-linecap="round" opacity=".7"/>
+<path d="M174 87c-22 18-35 38-41 59-7 22 3 40 20 53 9 11 13 21 10 33-2 8-8 13-17 15 26 13 53-2 57-27 2-13-4-23-14-32-8-8-13-14-10-22 2-5 8-8 14-9-10-9-16-20-19-34Z" fill="#FFF8D8"/>
+<g fill="#063B35"><rect x="228" y="126" width="10" height="35" rx="5"/><rect x="245" y="108" width="10" height="70" rx="5"/><rect x="262" y="92" width="10" height="102" rx="5"/><rect x="279" y="119" width="10" height="48" rx="5"/></g></svg>
