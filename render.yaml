@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: solai-context-aware-translator
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: SARVAM_BASE_URL
+        value: https://api.sarvam.ai
+      - key: SARVAM_CHAT_MODEL
+        value: sarvam-105b
+      - key: SARVAM_TTS_MODEL
+        value: bulbul:v4-flash
