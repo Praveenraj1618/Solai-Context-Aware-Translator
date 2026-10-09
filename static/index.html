@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#10141b" />
+  <title>Solai — Tamil Context Translator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Solai home">
+        <span class="brand-mark">சொ</span>
+        <span><strong>solai</strong><small>Context-first translation</small></span>
+      </a>
+      <div class="top-status"><span class="status-dot"></span><span id="provider-status">Checking API configuration</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow"><span class="eyebrow-line"></span> Tamil, understood in context</div>
+        <h1>Say what you <em>mean.</em><br />Not just what you said.</h1>
+        <p>Translate Tamil into natural English and Hindi. Keep idioms, intent, and conversational tone in the picture.</p>
+      </section>
+
+      <section class="workspace panel">
+        <div class="workspace-head">
+          <div>
+            <span class="section-kicker">01 / YOUR INPUT</span>
+            <h2>Choose how you want to translate</h2>
+          </div>
+          <div class="mode-switch" role="tablist" aria-label="Input mode">
+            <button class="mode-tab active" data-mode="text" role="tab" aria-selected="true">Text</button>
+            <button class="mode-tab" data-mode="audio" role="tab" aria-selected="false">Audio</button>
+            <button class="mode-tab" data-mode="live" role="tab" aria-selected="false">Live</button>
+          </div>
+        </div>
+
+        <div id="text-mode" class="mode-content">
+          <label for="source-text" class="field-label">Tamil / Tanglish</label>
+          <textarea id="source-text" rows="5" maxlength="12000" placeholder="Type or paste what someone said…&#10;Example: Naan paathukuren, nee kavala padadha."></textarea>
+          <div class="textarea-meta"><span>Supports Tamil script, Tanglish, and mixed text</span><span id="char-count">0 / 12,000</span></div>
+        </div>
+
+        <div id="audio-mode" class="mode-content hidden">
+          <div class="audio-dropzone" id="dropzone">
+            <div class="audio-icon">♫</div>
+            <strong>Record Tamil or choose an audio file</strong>
+            <span>WAV, MP3, M4A, OGG or WebM · short clips recommended (about 30 sec)</span>
+            <div class="audio-actions">
+              <button class="button button-secondary" id="record-button" type="button">● Record audio</button>
+              <label class="button button-secondary file-label" for="audio-file">Choose file</label>
+              <input id="audio-file" type="file" accept="audio/*,.webm,.m4a,.mp3,.wav,.ogg" />
+            </div>
+            <div id="recording-indicator" class="recording-indicator hidden"><span></span> Recording… <span id="record-time">00:00</span></div>
+            <div id="selected-audio" class="selected-audio hidden"></div>
+          </div>
+          <p class="microcopy">We transcribe first. Review and correct the transcript before translating it.</p>
+          <button class="button button-secondary" id="transcribe-button" type="button" disabled>Transcribe audio</button>
+          <div id="transcript-wrap" class="transcript-wrap hidden">
+            <label for="transcript-text" class="field-label">Transcript (editable)</label>
+            <textarea id="transcript-text" rows="4" placeholder="Your transcript will appear here…"></textarea>
+            <button class="text-button" id="use-transcript-button" type="button">Use transcript as input ↗</button>
+          </div>
+        </div>
+
+        <div id="live-mode" class="mode-content hidden">
+          <div class="live-intro">
+            <span class="live-pulse"></span>
+            <div><strong>Live Tamil conversation</strong><p>Speak naturally. Tamil captions update while you talk; English and Hindi translations appear after each phrase or short pause.</p></div>
+          </div>
+          <div class="live-toolbar">
+            <button class="button button-primary" id="live-start-button" type="button">● Start live translation</button>
+            <div class="live-status-wrap"><span id="live-state-dot" class="status-dot"></span><span id="live-status">Ready to connect</span></div>
+            <div class="setting-field live-voice-setting">
+              <label for="live-voice-select" class="field-label">Auto-speak</label>
+              <select id="live-voice-select">
+                <option value="en" selected>English voice</option>
+                <option value="hi">Hindi voice</option>
+                <option value="both">English + Hindi</option>
+                <option value="off">Off (captions only)</option>
+              </select>
+            </div>
+          </div>
+          <div class="live-caption-panel">
+            <div class="live-caption-top"><span class="live-overline">LIVE TAMIL CAPTIONS</span><span id="live-caption-state">Waiting for microphone</span></div>
+            <p id="live-partial">Your Tamil speech will appear here as you speak.</p>
+          </div>
+          <div class="live-feed-heading"><div><strong>Translated conversation</strong><small>Phrase-by-phrase, with recent context preserved during this session</small></div><button class="text-button" id="clear-live-button" type="button">Clear</button></div>
+          <div id="live-feed" class="live-feed"><div class="live-empty">Start live translation, then speak Tamil. Completed phrases and their English/Hindi translations will appear here.</div></div>
+          <p class="microcopy live-disclaimer">Live mode streams microphone audio to Sarvam for real-time transcription. Completed phrases are sent to the translation and, when enabled, text-to-speech APIs. This prototype does not save a recording.</p>
+        </div>
+
+        <div class="settings-grid" id="settings-grid">
+          <div class="setting-field">
+            <label for="style-select" class="field-label">Translation style</label>
+            <select id="style-select">
+              <option value="natural">Natural / balanced</option>
+              <option value="casual">Casual conversation</option>
+              <option value="formal">Formal / professional</option>
+            </select>
+          </div>
+          <div class="setting-field">
+            <label for="input-kind" class="field-label">Input format</label>
+            <select id="input-kind">
+              <option value="tamil">Tamil script</option>
+              <option value="tanglish">Tanglish (Roman letters)</option>
+              <option value="mixed">Mixed Tamil + English</option>
+            </select>
+          </div>
+        </div>
+
+        <details class="context-details">
+          <summary><span class="context-symbol">↳</span><span><strong>Add conversation context</strong><small>Helpful for idioms, implied meaning, or a previous message</small></span><span class="optional-pill">Optional</span></summary>
+          <label class="field-label" for="context-text">What was said before, or what is happening?</label>
+          <textarea id="context-text" rows="3" maxlength="4000" placeholder="Example: A friend asked who will handle the booking, and the speaker replied…"></textarea>
+          <p class="microcopy">Only include context needed to interpret this sentence. Avoid passwords or sensitive personal information.</p>
+        </details>
+
+        <div class="translate-row" id="translate-row">
+          <span class="microcopy"><span class="privacy-lock">▣</span> Not saved by this app; sent to the cloud AI provider for processing.</span>
+          <button class="button button-primary" id="translate-button" type="button">Translate <span>↗</span></button>
+        </div>
+        <div id="error-box" class="error-box hidden" role="alert"></div>
+      </section>
+
+      <section id="results-section" class="results-section hidden">
+        <div class="result-heading">
+          <div><span class="section-kicker">02 / THE MEANING</span><h2>Two ways to say it naturally.</h2></div>
+          <span class="result-label"><span class="status-dot"></span> Context-aware output</span>
+        </div>
+        <div class="source-summary"><span class="source-summary-label">SOURCE</span><p id="result-source"></p></div>
+        <div class="results-grid">
+          <article class="translation-card english-card">
+            <div class="translation-card-top"><span class="language-chip en-chip">EN</span><span class="language-name">English <small>en-IN</small></span><button class="copy-button" data-copy="english" aria-label="Copy English translation" title="Copy translation">▢</button></div>
+            <p class="translation-text" id="english-output"></p>
+            <div class="translation-card-bottom"><button class="listen-button" data-speak="english" type="button">▶ <span>Listen</span></button><span class="listen-state" id="english-audio-status"></span></div>
+            <audio id="english-audio" class="hidden" controls></audio>
+          </article>
+          <article class="translation-card hindi-card">
+            <div class="translation-card-top"><span class="language-chip hi-chip">हि</span><span class="language-name">Hindi <small>hi-IN</small></span><button class="copy-button" data-copy="hindi" aria-label="Copy Hindi translation" title="Copy translation">▢</button></div>
+            <p class="translation-text hindi-text" id="hindi-output"></p>
+            <div class="translation-card-bottom"><button class="listen-button" data-speak="hindi" type="button">▶ <span>सुनें / Listen</span></button><span class="listen-state" id="hindi-audio-status"></span></div>
+            <audio id="hindi-audio" class="hidden" controls></audio>
+          </article>
+        </div>
+        <div class="meaning-notes-grid">
+          <div class="meaning-note"><span class="note-icon">≈</span><div><strong>Intended meaning</strong><p id="meaning-output"></p></div></div>
+          <div id="notes-card" class="meaning-note"><span class="note-icon">✳</span><div><strong>Context note</strong><p id="notes-output">No extra ambiguity noted.</p></div></div>
+        </div>
+        <div class="feedback-row"><span>Does this capture the meaning?</span><button class="feedback-button" id="good-feedback" type="button">✓ Looks right</button><button class="feedback-button" id="bad-feedback" type="button">↺ Needs correction</button><span id="feedback-status" class="microcopy"></span></div>
+        <p class="disclaimer">AI translations can still misread dialect, sarcasm, or ambiguous expressions. Check important translations before using them.</p>
+      </section>
+
+      <footer><span class="footer-brand">சொல் / solai</span><span>Built to carry meaning across languages.</span><span class="version-pill">Prototype 0.2 · Live</span></footer>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
