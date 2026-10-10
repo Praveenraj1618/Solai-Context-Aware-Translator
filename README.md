@@ -12,8 +12,10 @@ A web app for contextual Tamil → English + Hindi translation with clip-based t
 - Live microphone streaming with interim Tamil captions and phrase-by-phrase English/Hindi translations
 - Recent in-session utterances are added as context for later phrases
 - Optional auto-spoken English, Hindi, or both after each completed phrase
+- Focus Mode: browser/device echo cancellation and noise-suppression constraints during live microphone capture
+- Group Mode: live captions/translations plus temporary in-browser audio capture, with opt-in post-session speaker diarization and translated speaker segments
 - Generate spoken English or Hindi audio on demand
-- API keys remain on the FastAPI server; no audio or translation history is saved by this app
+- API keys remain on the FastAPI server; the app does not persist audio or translation history to a database
 
 ## Requirements
 
@@ -94,3 +96,13 @@ This is a prototype, not a guarantee of perfect translation. The contextual mode
 - **No microphone prompt**: use `http://127.0.0.1:8000` and allow microphone access in browser settings.
 
 Audio recording compatibility note: browser MIME types such as `audio/webm;codecs=opus` are normalized to `audio/webm` before being sent to the speech provider.
+
+
+## Focus Mode and Group Mode
+
+- **Focus Mode (real-time):** uses browser/device echo cancellation and noise-suppression constraints on microphone capture. Browser support varies and the browser may ignore requested constraints. The application checks actual track settings when available.
+- **Group Mode (real-time captions, post-session speaker labels):** sends microphone PCM to the existing Sarvam real-time WebSocket exactly as before. Simultaneously, the browser holds a temporary MediaRecorder recording in memory. Audio is uploaded only when the user stops and presses Analyze speakers.
+- **Speaker diarization is not real-time in this integration.** The backend submits the clip to Sarvam's Batch Speech-to-Text API with diarization enabled, polls the batch job, and retrieves transcript segments with speaker IDs and timestamps. Completed segments are then translated into English and Hindi. Requires Batch STT access and may incur additional API charges.
+- **Noise and music limitations:** browser noise suppression can help with steady environmental noise, and echo cancellation can reduce playback leakage. They are not guaranteed to remove music or television. This version does not run a dedicated neural music-removal or overlapping-speech-separation model.
+- Group Mode is limited to 15 MB per session recording in this prototype. Batch analysis requires a clear enough recording; overlapping speech can be omitted or attributed incorrectly.
+- Group recordings are held in browser memory while the page remains open. They are uploaded only when the user selects Analyze speakers. The backend writes received bytes to a temporary directory for the batch job and removes that directory after processing; job status/results remain in process memory only.
