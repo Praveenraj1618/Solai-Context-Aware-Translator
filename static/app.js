@@ -276,11 +276,13 @@ function startGroupRecording(live) {
   live.recordingTooLarge = false;
   live.recorderError = '';
   recorder.ondataavailable = (event) => {
-    if (!event.data?.size) return;
+    if (!event.data?.size || live.recordingTooLarge) return;
     live.groupChunks.push(event.data);
     const size = live.groupChunks.reduce((total, chunk) => total + chunk.size, 0);
     if (size > 15 * 1024 * 1024) {
       live.recordingTooLarge = true;
+      live.groupChunks = [];
+      live.recordedBlob = null;
       $('group-recording-status').textContent = 'Group recording exceeded 15 MB. Live translation continues, but this clip is too large for speaker analysis.';
       $('analyze-speakers-button').disabled = true;
     }
@@ -366,12 +368,12 @@ async function analyzeGroupSpeakers() {
       translations.append(en, hi); card.append(head, source, translations); output.append(card);
       cards.set(String(segment.id), { enText, hiText });
     }
-    const context = [
-      $('context-text').value.trim(),
-      segments.slice(0, 12).map((segment) => `${segment.speaker}: ${segment.text}`).join('\n')
-    ].filter(Boolean).join('\n\n').slice(0, 3000);
+    const manualContext = $('context-text').value.trim();
     for (let i = 0; i < segments.length; i += 8) {
       const batch = segments.slice(i, i + 8);
+      const nearbyContext = segments.slice(Math.max(0, i - 5), i + batch.length)
+        .map((segment) => `${segment.speaker}: ${segment.text}`).join('\n');
+      const context = [manualContext, nearbyContext].filter(Boolean).join('\n\n').slice(0, 3000);
       const result = await apiFetch('/api/translate-speaker-segments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -384,6 +386,7 @@ async function analyzeGroupSpeakers() {
       status.textContent = `Translated ${Math.min(i + batch.length, segments.length)} of ${segments.length} speaker segments…`;
     }
     status.textContent = 'Post-session speaker analysis and translation complete. Speaker labels are estimates; overlapping speech can still be misattributed.';
+    live.analysisDone = true;
     button.textContent = 'Analyze speakers again';
   } catch (err) {
     status.textContent = `Speaker analysis failed: ${err.message || 'unknown error'}`;
@@ -421,12 +424,17 @@ function finishLiveSession(live, statusText = 'Live translation stopped') {
   $('live-start-button').classList.remove('recording');
   $('live-caption-state').textContent = 'Microphone stopped';
   setLiveStatus(statusText, false);
+  updateAudioModeUI();
 }
 
 async function startLiveTranslation() {
   if (state.live && (state.live.active || state.live.stopping)) {
     await stopLiveTranslation(state.live);
     return;
+  }
+  if (state.live?.audioMode === 'group' && state.live.recordedBlob && !state.live.analysisDone) {
+    const discard = window.confirm('A Group Mode recording is ready but has not been analyzed. Start another session and discard this recording? Cancel to analyze it first.');
+    if (!discard) return;
   }
   const button = $('live-start-button');
   setError('');
