@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import os
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
@@ -25,6 +27,8 @@ CHAT_MODEL = os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b")
 TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v4-flash")
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 MAX_TEXT_CHARS = 12000
+MAX_DIARIZATION_AUDIO_BYTES = 15 * 1024 * 1024
+DIARIZATION_TASKS: dict[str, dict] = {}
 
 app = FastAPI(title="Tamil Context Translator", version="0.2.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -40,6 +44,20 @@ class TranslateRequest(BaseModel):
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2500)
     language: Literal["en-IN", "hi-IN"]
+
+
+class SpeakerSegmentForTranslation(BaseModel):
+    id: str = Field(min_length=1, max_length=32)
+    speaker: str = Field(min_length=1, max_length=40)
+    text: str = Field(min_length=1, max_length=1800)
+    start_time_seconds: float = Field(ge=0)
+    end_time_seconds: float = Field(ge=0)
+
+
+class SpeakerSegmentsTranslateRequest(BaseModel):
+    segments: list[SpeakerSegmentForTranslation] = Field(min_length=1, max_length=20)
+    context: str = Field(default="", max_length=3000)
+    style: Literal["natural", "casual", "formal"] = "natural"
 
 
 def api_headers() -> dict[str, str]:
@@ -281,6 +299,256 @@ async def transcribe_audio(file: UploadFile = File(...)) -> dict:
     if not transcript:
         raise HTTPException(status_code=502, detail="No transcript was returned. Try a clearer or shorter audio clip.")
     return {"transcript": transcript, "language_code": data.get("language_code", "ta-IN"), "request_id": data.get("request_id")}
+
+
+def _run_sarvam_diarization_sync(audio_bytes: bytes, filename: str, num_speakers: int | None) -> dict:
+    """Run the provider's batch diarization in a worker thread; audio is temporary and deleted."""
+    try:
+        from sarvamai import SarvamAI
+    except ImportError as exc:
+        raise RuntimeError("Speaker analysis SDK is not installed. Redeploy after installing requirements.txt.") from exc
+
+    allowed_extensions = {".webm", ".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac", ".mp4", ".aiff"}
+    extension = Path(filename or "group-session.webm").suffix.lower()
+    if extension not in allowed_extensions:
+        extension = ".webm"
+
+    with tempfile.TemporaryDirectory(prefix="solai-diarization-") as temp_dir:
+        root = Path(temp_dir)
+        audio_path = root / ("group-session" + extension)
+        audio_path.write_bytes(audio_bytes)
+
+        client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
+        params = {
+            "model": "saaras:v4",
+            "mode": "transcribe",
+            "language_code": "ta-IN",
+            "with_diarization": True,
+            "with_timestamps": True,
+        }
+        if num_speakers is not None:
+            params["num_speakers"] = num_speakers
+
+        job = client.speech_to_text_job.create_job(**params)
+        job.upload_files(file_paths=[str(audio_path)])
+        job.start()
+        job.wait_until_complete(poll_interval=3, timeout=360)
+
+        file_results = job.get_file_results()
+        if isinstance(file_results, dict):
+            successful = file_results.get("successful") or []
+            failed = file_results.get("failed") or []
+        else:
+            successful = getattr(file_results, "successful", []) or []
+            failed = getattr(file_results, "failed", []) or []
+        if not successful:
+            reason = "Batch speech recognition did not complete successfully."
+            if failed and isinstance(failed[0], dict) and failed[0].get("error_message"):
+                reason = "Batch speech recognition failed: " + str(failed[0]["error_message"])[:250]
+            raise RuntimeError(reason)
+
+        output_dir = root / "output"
+        output_dir.mkdir(exist_ok=True)
+        job.download_outputs(output_dir=str(output_dir))
+        result_files = sorted(output_dir.rglob("*.json"))
+        if not result_files:
+            raise RuntimeError("Speaker analysis completed, but no transcript output file was returned.")
+
+        payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+        diarized = payload.get("diarized_transcript") or {}
+        entries = diarized.get("entries") if isinstance(diarized, dict) else []
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError("The provider returned no speaker-labelled segments. Try a clearer recording with distinct speaker turns.")
+
+        labels: dict[str, str] = {}
+        segments: list[dict] = []
+        for entry in entries[:300]:
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("transcript") or "").strip()
+            if not text:
+                continue
+            raw_speaker = str(entry.get("speaker_id", "unknown"))
+            if raw_speaker not in labels:
+                labels[raw_speaker] = "Speaker " + str(len(labels) + 1)
+            try:
+                start_seconds = max(0.0, float(entry.get("start_time_seconds", 0) or 0))
+            except (TypeError, ValueError):
+                start_seconds = 0.0
+            try:
+                end_seconds = max(start_seconds, float(entry.get("end_time_seconds", start_seconds) or start_seconds))
+            except (TypeError, ValueError):
+                end_seconds = start_seconds
+            segments.append({
+                "id": str(len(segments)),
+                "speaker": labels[raw_speaker],
+                "text": text[:1800],
+                "start_time_seconds": start_seconds,
+                "end_time_seconds": end_seconds,
+            })
+
+        if not segments:
+            raise RuntimeError("The provider returned no usable speaker-labelled speech.")
+        return {
+            "transcript": str(payload.get("transcript") or ""),
+            "speaker_count": len(labels),
+            "segments": segments,
+            "request_id": payload.get("request_id"),
+        }
+
+
+async def _diarization_worker(task_id: str, audio_bytes: bytes, filename: str, num_speakers: int | None) -> None:
+    task = DIARIZATION_TASKS.get(task_id)
+    if not task:
+        return
+    task["status"] = "running"
+    try:
+        result = await asyncio.to_thread(_run_sarvam_diarization_sync, audio_bytes, filename, num_speakers)
+        task = DIARIZATION_TASKS.get(task_id)
+        if task is not None:
+            task.update({"status": "completed", "result": result})
+    except Exception as exc:
+        task = DIARIZATION_TASKS.get(task_id)
+        if task is not None:
+            safe_detail = (
+                str(exc)[:350]
+                if isinstance(exc, (RuntimeError, TimeoutError, ValueError))
+                else "Check that your Sarvam account has Batch Speech-to-Text access and review the server logs."
+            )
+            task.update({"status": "failed", "detail": safe_detail, "error_type": type(exc).__name__})
+    finally:
+        task = DIARIZATION_TASKS.get(task_id)
+        if task is not None:
+            task.pop("task", None)
+
+
+@app.post("/api/diarize")
+async def start_speaker_diarization(
+    file: UploadFile = File(...),
+    num_speakers: int | None = Form(default=None, ge=2, le=20),
+) -> dict:
+    """Queue post-session speaker diarization; raw audio is not saved by this app."""
+    if not SARVAM_API_KEY:
+        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
+    content_type = (file.content_type or "application/octet-stream").lower().split(";", 1)[0].strip()
+    if not (content_type.startswith("audio/") or content_type == "video/webm" or content_type == "application/octet-stream"):
+        raise HTTPException(status_code=415, detail="Upload a supported audio recording (WebM, WAV, MP3, M4A, OGG, or FLAC).")
+    audio_bytes = await file.read(MAX_DIARIZATION_AUDIO_BYTES + 1)
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="The group recording is empty.")
+    if len(audio_bytes) > MAX_DIARIZATION_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="The group recording is larger than 15 MB. Use a shorter session.")
+
+    # Keep only a small number of finished in-memory results for this prototype.
+    if len(DIARIZATION_TASKS) >= 12:
+        for old_id, old_task in list(DIARIZATION_TASKS.items()):
+            if old_task.get("status") in {"completed", "failed"}:
+                DIARIZATION_TASKS.pop(old_id, None)
+            if len(DIARIZATION_TASKS) < 8:
+                break
+
+    task_id = uuid.uuid4().hex
+    filename = Path(file.filename or "group-session.webm").name
+    DIARIZATION_TASKS[task_id] = {"status": "queued"}
+    background_task = asyncio.create_task(_diarization_worker(task_id, audio_bytes, filename, num_speakers))
+    DIARIZATION_TASKS[task_id]["task"] = background_task
+    return {"job_id": task_id, "status": "queued"}
+
+
+@app.get("/api/diarize/{job_id}")
+async def get_speaker_diarization(job_id: str) -> dict:
+    task = DIARIZATION_TASKS.get(job_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Speaker analysis job was not found. Start the analysis again.")
+    return {key: value for key, value in task.items() if key != "task"}
+
+
+@app.post("/api/translate-speaker-segments")
+async def translate_speaker_segments(request: SpeakerSegmentsTranslateRequest) -> dict:
+    style_guidance = {
+        "natural": "Use natural, context-appropriate phrasing.",
+        "casual": "Use natural casual conversation and preserve interpersonal tone.",
+        "formal": "Use clear, polite, professional phrasing.",
+    }
+    segment_data = [
+        {"id": segment.id, "speaker": segment.speaker, "text": segment.text}
+        for segment in request.segments
+    ]
+    system_prompt = (
+        "You translate finalized Tamil speech segments into English and Hindi. Translate each item independently while "
+        "using context to resolve ambiguity. Preserve each id exactly, do not merge or reorder segments, keep speaker labels "
+        "attached to the same utterance, preserve negation/names/numbers, and never invent content. Hindi must be in Devanagari. "
+        "Return valid JSON only with one key: translations. Its value must be an array of objects with exactly id, english, hindi."
+    )
+    context = request.context.strip() or "No additional conversation context."
+    user_prompt = (
+        "Style: " + request.style + ". " + style_guidance[request.style] + "\n"
+        "Conversation context:\n" + context + "\n\n"
+        "Translate these segments in order; retain each id and speaker:\n"
+        + json.dumps(segment_data, ensure_ascii=False)
+    )
+    payload = {
+        "model": CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+        "reasoning_effort": None,
+        "max_tokens": 4500,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as client:
+            response = await client.post(
+                f"{SARVAM_BASE_URL}/v1/chat/completions",
+                headers={**api_headers(), "Content-Type": "application/json"},
+                json=payload,
+            )
+            if response.is_error:
+                raise HTTPException(status_code=502, detail=f"Speaker translation provider error: {_safe_provider_error(response)}")
+            data = response.json()
+            content = _chat_message_content(data)
+            if not content:
+                fallback = {key: value for key, value in payload.items() if key != "response_format"}
+                response = await client.post(
+                    f"{SARVAM_BASE_URL}/v1/chat/completions",
+                    headers={**api_headers(), "Content-Type": "application/json"},
+                    json=fallback,
+                )
+                if response.is_error:
+                    raise HTTPException(status_code=502, detail=f"Speaker translation provider error on retry: {_safe_provider_error(response)}")
+                data = response.json()
+                content = _chat_message_content(data)
+        if not content:
+            raise HTTPException(status_code=502, detail=_empty_completion_detail(data))
+        translated = extract_json_object(content)
+        rows = translated.get("translations")
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=502, detail="The model did not return a translations array for the speaker segments.")
+        by_id = {
+            str(row.get("id")): row
+            for row in rows
+            if isinstance(row, dict) and row.get("id") is not None
+        }
+        output = []
+        for segment in request.segments:
+            row = by_id.get(segment.id)
+            if row is None:
+                raise HTTPException(status_code=502, detail="The model omitted a speaker segment translation. Retry the analysis.")
+            english = str(row.get("english") or "").strip()
+            hindi = str(row.get("hindi") or "").strip()
+            if not english or not hindi:
+                raise HTTPException(status_code=502, detail="The model returned an empty speaker segment translation. Retry the analysis.")
+            output.append({"id": segment.id, "english": english, "hindi": hindi})
+        return {"translations": output}
+    except HTTPException:
+        raise
+    except (httpx.TimeoutException, httpx.RequestError) as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach the translation provider: {type(exc).__name__}. Please retry.") from exc
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc) or "Unexpected speaker translation response.") from exc
+
 
 
 @app.post("/api/speak")
