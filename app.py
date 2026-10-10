@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,9 @@ TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v4-flash")
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 MAX_TEXT_CHARS = 12000
 MAX_DIARIZATION_AUDIO_BYTES = 15 * 1024 * 1024
+MAX_ACTIVE_DIARIZATION_JOBS = 2
+MAX_DIARIZATION_JOBS_PER_HOUR = 5
+DIARIZATION_SUBMISSIONS: list[float] = []
 DIARIZATION_TASKS: dict[str, dict] = {}
 
 app = FastAPI(title="Tamil Context Translator", version="0.2.0")
@@ -429,6 +433,13 @@ async def start_speaker_diarization(
     """Queue post-session speaker diarization; raw audio is not saved by this app."""
     if not SARVAM_API_KEY:
         raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
+    now = time.monotonic()
+    DIARIZATION_SUBMISSIONS[:] = [stamp for stamp in DIARIZATION_SUBMISSIONS if now - stamp < 3600]
+    active_jobs = sum(1 for task in DIARIZATION_TASKS.values() if task.get("status") in {"queued", "running"})
+    if active_jobs >= MAX_ACTIVE_DIARIZATION_JOBS:
+        raise HTTPException(status_code=429, detail="Speaker analysis is busy. Wait for the current batch job to finish, then retry.")
+    if len(DIARIZATION_SUBMISSIONS) >= MAX_DIARIZATION_JOBS_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Speaker-analysis limit reached for this app this hour. Please retry later.")
     content_type = (file.content_type or "application/octet-stream").lower().split(";", 1)[0].strip()
     if not (content_type.startswith("audio/") or content_type == "video/webm" or content_type == "application/octet-stream"):
         raise HTTPException(status_code=415, detail="Upload a supported audio recording (WebM, WAV, MP3, M4A, OGG, or FLAC).")
@@ -448,6 +459,7 @@ async def start_speaker_diarization(
 
     task_id = uuid.uuid4().hex
     filename = Path(file.filename or "group-session.webm").name
+    DIARIZATION_SUBMISSIONS.append(time.monotonic())
     DIARIZATION_TASKS[task_id] = {"status": "queued"}
     background_task = asyncio.create_task(_diarization_worker(task_id, audio_bytes, filename, num_speakers))
     DIARIZATION_TASKS[task_id]["task"] = background_task
