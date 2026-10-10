@@ -362,7 +362,7 @@ def _run_sarvam_diarization_sync(audio_bytes: bytes, filename: str, num_speakers
 
         labels: dict[str, str] = {}
         segments: list[dict] = []
-        for entry in entries[:300]:
+        for entry in entries[:80]:
             if not isinstance(entry, dict):
                 continue
             text = str(entry.get("transcript") or "").strip()
