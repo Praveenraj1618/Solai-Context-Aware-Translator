@@ -324,7 +324,6 @@ def _run_sarvam_diarization_sync(audio_bytes: bytes, filename: str, num_speakers
             "mode": "transcribe",
             "language_code": "ta-IN",
             "with_diarization": True,
-            "with_timestamps": True,
         }
         if num_speakers is not None:
             params["num_speakers"] = num_speakers
