@@ -338,7 +338,7 @@ async function analyzeGroupSpeakers() {
     status.textContent = 'Speaker analysis queued. The live translation transcript remains available above.';
     button.textContent = 'Analyzing speakers…';
     let job = null;
-    for (let attempt = 0; attempt < 125; attempt++) {
+    for (let attempt = 0; attempt < 150; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
       job = await apiFetch(`/api/diarize/${encodeURIComponent(created.job_id)}`);
       if (job.status === 'completed' || job.status === 'failed') break;
@@ -428,6 +428,10 @@ function finishLiveSession(live, statusText = 'Live translation stopped') {
 }
 
 async function startLiveTranslation() {
+  if ($('analyze-speakers-button').dataset.busy === 'true') {
+    setError('Wait for speaker analysis to finish before starting another live session.');
+    return;
+  }
   if (state.live && (state.live.active || state.live.stopping)) {
     await stopLiveTranslation(state.live);
     return;
