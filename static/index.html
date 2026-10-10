@@ -72,6 +72,31 @@
             <span class="live-pulse"></span>
             <div><strong>Live Tamil conversation</strong><p>Speak naturally. Tamil captions update while you talk; English and Hindi translations appear after each phrase or short pause.</p></div>
           </div>
+          <div class="live-audio-options">
+            <div class="setting-field">
+              <label for="live-processing-mode" class="field-label">Conversation mode</label>
+              <select id="live-processing-mode">
+                <option value="focus" selected>Focus Mode · reduce background noise</option>
+                <option value="group">Group Mode · analyze speakers after stopping</option>
+              </select>
+            </div>
+            <div class="live-audio-toggles">
+              <label class="audio-toggle" for="live-noise-suppression"><input id="live-noise-suppression" type="checkbox" checked /><span><strong>Noise suppression</strong><small>Browser/device audio processing</small></span></label>
+              <label class="audio-toggle" for="live-echo-cancellation"><input id="live-echo-cancellation" type="checkbox" checked /><span><strong>Echo cancellation</strong><small>Helps reduce speaker playback leaking into mic</small></span></label>
+            </div>
+            <div class="setting-field" id="speaker-count-field">
+              <label for="live-speaker-count" class="field-label">Expected speakers</label>
+              <select id="live-speaker-count">
+                <option value="auto" selected>Auto-detect</option>
+                <option value="2">2 speakers</option>
+                <option value="3">3 speakers</option>
+                <option value="4">4 speakers</option>
+                <option value="5">5 speakers</option>
+                <option value="6">6 speakers</option>
+              </select>
+            </div>
+          </div>
+          <p class="microcopy live-audio-note" id="live-audio-note">Focus Mode stays live. Browser noise suppression helps with steady noise, but it cannot reliably remove music or separate overlapping voices.</p>
           <div class="live-toolbar">
             <button class="button button-primary" id="live-start-button" type="button">● Start live translation</button>
             <div class="live-status-wrap"><span id="live-state-dot" class="status-dot"></span><span id="live-status">Ready to connect</span></div>
@@ -91,7 +116,15 @@
           </div>
           <div class="live-feed-heading"><div><strong>Translated conversation</strong><small>Phrase-by-phrase, with recent context preserved during this session</small></div><button class="text-button" id="clear-live-button" type="button">Clear</button></div>
           <div id="live-feed" class="live-feed"><div class="live-empty">Start live translation, then speak Tamil. Completed phrases and their English/Hindi translations will appear here.</div></div>
-          <p class="microcopy live-disclaimer">Live mode streams microphone audio to Sarvam for real-time transcription. Completed phrases are sent to the translation and, when enabled, text-to-speech APIs. This prototype does not save a recording.</p>
+          <section class="speaker-analysis-panel" aria-labelledby="speaker-analysis-title">
+            <div class="speaker-analysis-head">
+              <div><span class="live-overline">GROUP MODE · POST-SESSION</span><h3 id="speaker-analysis-title">Speaker-labelled transcript</h3><p>Live captions remain speaker-neutral. When you stop, you can explicitly upload the temporary local recording for batch speaker analysis.</p></div>
+              <button class="button button-secondary" id="analyze-speakers-button" type="button" disabled>Analyze speakers</button>
+            </div>
+            <p id="group-recording-status" class="microcopy">Focus Mode is selected. Switch to Group Mode before starting a session to enable speaker analysis.</p>
+            <div id="speaker-analysis-results" class="speaker-analysis-results hidden"></div>
+          </section>
+          <p class="microcopy live-disclaimer">Live mode streams microphone audio to Sarvam for real-time transcription. Group Mode also keeps a temporary browser recording in memory. It is only uploaded if you press Analyze speakers; batch diarization and translation happen after the session stops. This prototype does not save audio or transcript history to its database.</p>
         </div>
 
         <div class="settings-grid" id="settings-grid">
