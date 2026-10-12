@@ -1,0 +1,30 @@
+name: Validate Solai
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, feat/live-audio-focus-group-modes]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Python requirements
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Compile Python backend
+        run: python -m compileall -q app.py
+      - name: Check frontend JavaScript syntax
+        run: node --check static/app.js
+      - name: Check FastAPI routes load
+        run: python -c "from app import app; assert any(getattr(r, 'path', '') == '/api/diarize' for r in app.routes); assert any(getattr(r, 'path', '') == '/ws/live' for r in app.routes); print('FastAPI routes loaded')"

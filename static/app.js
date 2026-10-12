@@ -162,13 +162,41 @@ function makeLiveSession() {
   return {
     socket: null, stream: null, audioContext: null, source: null, processor: null, silentGain: null,
     active: false, stopping: false, history: [], translationQueue: Promise.resolve(), voiceQueue: Promise.resolve(),
-    stopTimer: null, startedAt: 0, finished: false
+    stopTimer: null, startedAt: 0, finished: false,
+    audioMode: 'focus', noiseSuppression: true, echoCancellation: true,
+    groupRecorder: null, groupChunks: [], recordedBlob: null, recordedFilename: 'solai-group-session.webm',
+    recordingTooLarge: false, recorderError: ''
   };
 }
 
 function setLiveStatus(text, connected = false) {
   $('live-status').textContent = text;
   $('live-state-dot').classList.toggle('ok', connected);
+}
+
+function formatTime(seconds) {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  const wholeSeconds = Math.floor(safe % 60);
+  return `${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')}`;
+}
+
+function updateAudioModeUI() {
+  const group = $('live-processing-mode').value === 'group';
+  const live = state.live;
+  const running = Boolean(live && (live.active || live.stopping));
+  $('live-processing-mode').disabled = running;
+  $('live-noise-suppression').disabled = running;
+  $('live-echo-cancellation').disabled = running;
+  $('live-speaker-count').disabled = !group || running;
+  $('speaker-count-field').classList.toggle('setting-disabled', !group);
+  $('live-audio-note').textContent = group
+    ? 'Group Mode keeps a temporary local audio recording. Live captions/translations still arrive in real time; speaker labels are analyzed after you stop and choose Analyze speakers. Music and overlapping voices may still affect accuracy.'
+    : 'Focus Mode stays live. Browser noise suppression helps with steady noise, but it cannot reliably remove music or separate overlapping voices.';
+  const canAnalyze = Boolean(live && live.audioMode === 'group' && live.recordedBlob && !live.recordingTooLarge);
+  $('analyze-speakers-button').disabled = !canAnalyze || $('analyze-speakers-button').dataset.busy === 'true';
+  if (!group && !running) $('group-recording-status').textContent = 'Focus Mode is selected. Switch to Group Mode before starting a session to enable speaker analysis.';
+  else if (group && !live) $('group-recording-status').textContent = 'Group Mode records a temporary audio clip in this browser. The clip is uploaded only when you explicitly choose Analyze speakers.';
 }
 
 function resampleMono(input, inputRate, outputRate) {
@@ -232,6 +260,144 @@ async function startLiveAudioGraph(live) {
   setLiveStatus('Listening to Tamil', true);
 }
 
+function startGroupRecording(live) {
+  if (live.audioMode !== 'group') return;
+  if (!window.MediaRecorder) {
+    throw new Error('This browser cannot record Group Mode audio for post-session speaker analysis. Focus Mode can still be used.');
+  }
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+  const options = {};
+  const supported = candidates.find((type) => MediaRecorder.isTypeSupported(type));
+  if (supported) options.mimeType = supported;
+  const recorder = new MediaRecorder(live.stream, options);
+  live.groupRecorder = recorder;
+  live.groupChunks = [];
+  live.recordedBlob = null;
+  live.recordingTooLarge = false;
+  live.recorderError = '';
+  recorder.ondataavailable = (event) => {
+    if (!event.data?.size || live.recordingTooLarge) return;
+    live.groupChunks.push(event.data);
+    const size = live.groupChunks.reduce((total, chunk) => total + chunk.size, 0);
+    if (size > 15 * 1024 * 1024) {
+      live.recordingTooLarge = true;
+      live.groupChunks = [];
+      live.recordedBlob = null;
+      $('group-recording-status').textContent = 'Group recording exceeded 15 MB. Live translation continues, but this clip is too large for speaker analysis.';
+      $('analyze-speakers-button').disabled = true;
+    }
+  };
+  recorder.onerror = () => {
+    live.recorderError = 'The browser recording failed. Live captions may continue, but speaker analysis will not be available.';
+    $('group-recording-status').textContent = live.recorderError;
+  };
+  recorder.onstop = () => {
+    if (live.groupChunks.length && !live.recordingTooLarge && !live.recorderError) {
+      const rawType = recorder.mimeType || live.groupChunks[0]?.type || 'audio/webm';
+      const mimeType = rawType.split(';', 1)[0].trim().toLowerCase() || 'audio/webm';
+      const extension = mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : mimeType.includes('wav') ? 'wav' : 'webm';
+      live.recordedFilename = `solai-group-session.${extension}`;
+      live.recordedBlob = new Blob(live.groupChunks, { type: mimeType });
+      $('group-recording-status').textContent = `Group audio ready (${(live.recordedBlob.size / 1024 / 1024).toFixed(2)} MB). Nothing has been uploaded yet.`;
+    } else if (!live.recordingTooLarge) {
+      $('group-recording-status').textContent = live.recorderError || 'No group audio was captured. Try another session.';
+    }
+    updateAudioModeUI();
+  };
+  recorder.start(1000);
+  $('group-recording-status').textContent = 'Recording locally while live translation runs. The clip is not uploaded unless you choose Analyze speakers.';
+}
+
+async function stopGroupRecording(live) {
+  const recorder = live?.groupRecorder;
+  if (!recorder || recorder.state === 'inactive') return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2500);
+    recorder.addEventListener('stop', () => { clearTimeout(timer); resolve(); }, { once: true });
+    try { recorder.stop(); } catch { clearTimeout(timer); resolve(); }
+  });
+}
+
+async function analyzeGroupSpeakers() {
+  const live = state.live;
+  if (!live || live.audioMode !== 'group' || !live.recordedBlob || live.recordingTooLarge) return;
+  const button = $('analyze-speakers-button');
+  button.dataset.busy = 'true';
+  button.disabled = true;
+  button.textContent = 'Uploading audio…';
+  const output = $('speaker-analysis-results');
+  output.innerHTML = '';
+  output.classList.remove('hidden');
+  const status = $('group-recording-status');
+  try {
+    const form = new FormData();
+    form.append('file', new File([live.recordedBlob], live.recordedFilename, { type: live.recordedBlob.type || 'audio/webm' }));
+    const requestedSpeakers = $('live-speaker-count').value;
+    if (requestedSpeakers !== 'auto') form.append('num_speakers', requestedSpeakers);
+    const created = await apiFetch('/api/diarize', { method: 'POST', body: form });
+    status.textContent = 'Speaker analysis queued. The live translation transcript remains available above.';
+    button.textContent = 'Analyzing speakers…';
+    let job = null;
+    for (let attempt = 0; attempt < 150; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      job = await apiFetch(`/api/diarize/${encodeURIComponent(created.job_id)}`);
+      if (job.status === 'completed' || job.status === 'failed') break;
+    }
+    if (!job || job.status !== 'completed') {
+      throw new Error(job?.detail || 'Speaker analysis timed out. Try a shorter recording or inspect the server logs.');
+    }
+    const segments = Array.isArray(job.result?.segments) ? job.result.segments : [];
+    if (!segments.length) throw new Error('No speaker-labelled segments were found in the recording.');
+    status.textContent = `Found ${job.result.speaker_count} speaker label(s) across ${segments.length} speech segments. Translating the segments now…`;
+    const cards = new Map();
+    output.innerHTML = '';
+    for (const segment of segments) {
+      const card = document.createElement('article'); card.className = 'speaker-segment';
+      const head = document.createElement('div'); head.className = 'speaker-segment-head';
+      const speaker = document.createElement('strong'); speaker.textContent = segment.speaker || 'Speaker';
+      const time = document.createElement('span'); time.textContent = `${formatTime(segment.start_time_seconds)}–${formatTime(segment.end_time_seconds)}`;
+      head.append(speaker, time);
+      const source = document.createElement('p'); source.className = 'speaker-segment-source'; source.textContent = segment.text || '';
+      const translations = document.createElement('div'); translations.className = 'speaker-segment-translations';
+      const en = document.createElement('div'); en.className = 'en';
+      const enLabel = document.createElement('small'); enLabel.textContent = 'ENGLISH';
+      const enText = document.createElement('p'); enText.textContent = 'Translation pending…'; en.append(enLabel, enText);
+      const hi = document.createElement('div'); hi.className = 'hi';
+      const hiLabel = document.createElement('small'); hiLabel.textContent = 'हिन्दी';
+      const hiText = document.createElement('p'); hiText.textContent = 'अनुवाद प्रतीक्षारत…'; hi.append(hiLabel, hiText);
+      translations.append(en, hi); card.append(head, source, translations); output.append(card);
+      cards.set(String(segment.id), { enText, hiText });
+    }
+    const manualContext = $('context-text').value.trim();
+    for (let i = 0; i < segments.length; i += 8) {
+      const batch = segments.slice(i, i + 8);
+      const nearbyContext = segments.slice(Math.max(0, i - 5), i + batch.length)
+        .map((segment) => `${segment.speaker}: ${segment.text}`).join('\n');
+      const context = [manualContext, nearbyContext].filter(Boolean).join('\n\n').slice(0, 3000);
+      const result = await apiFetch('/api/translate-speaker-segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ segments: batch, context, style: $('style-select').value })
+      });
+      for (const translated of result.translations || []) {
+        const target = cards.get(String(translated.id));
+        if (target) { target.enText.textContent = translated.english; target.hiText.textContent = translated.hindi; }
+      }
+      status.textContent = `Translated ${Math.min(i + batch.length, segments.length)} of ${segments.length} speaker segments…`;
+    }
+    status.textContent = 'Post-session speaker analysis and translation complete. Speaker labels are estimates; overlapping speech can still be misattributed.';
+    live.analysisDone = true;
+    button.textContent = 'Analyze speakers again';
+  } catch (err) {
+    status.textContent = `Speaker analysis failed: ${err.message || 'unknown error'}`;
+    button.textContent = 'Retry speaker analysis';
+  } finally {
+    delete button.dataset.busy;
+    updateAudioModeUI();
+    if (live.recordedBlob && !live.recordingTooLarge) button.disabled = false;
+  }
+}
+
 async function releaseLiveAudio(live) {
   live.active = false;
   try { if (live.processor) { live.processor.onaudioprocess = null; live.processor.disconnect(); } } catch {}
@@ -248,6 +414,7 @@ function finishLiveSession(live, statusText = 'Live translation stopped') {
   live.finished = true;
   live.stopping = false;
   if (live.stopTimer) { clearTimeout(live.stopTimer); live.stopTimer = null; }
+  stopGroupRecording(live).catch(() => {});
   releaseLiveAudio(live);
   if (live.socket && live.socket.readyState < WebSocket.CLOSING) {
     try { live.socket.close(); } catch {}
@@ -257,12 +424,21 @@ function finishLiveSession(live, statusText = 'Live translation stopped') {
   $('live-start-button').classList.remove('recording');
   $('live-caption-state').textContent = 'Microphone stopped';
   setLiveStatus(statusText, false);
+  updateAudioModeUI();
 }
 
 async function startLiveTranslation() {
+  if ($('analyze-speakers-button').dataset.busy === 'true') {
+    setError('Wait for speaker analysis to finish before starting another live session.');
+    return;
+  }
   if (state.live && (state.live.active || state.live.stopping)) {
     await stopLiveTranslation(state.live);
     return;
+  }
+  if (state.live?.audioMode === 'group' && state.live.recordedBlob && !state.live.analysisDone) {
+    const discard = window.confirm('A Group Mode recording is ready but has not been analyzed. Start another session and discard this recording? Cancel to analyze it first.');
+    if (!discard) return;
   }
   const button = $('live-start-button');
   setError('');
@@ -271,12 +447,28 @@ async function startLiveTranslation() {
     return;
   }
   const live = makeLiveSession();
+  live.audioMode = $('live-processing-mode').value;
+  live.noiseSuppression = $('live-noise-suppression').checked;
+  live.echoCancellation = $('live-echo-cancellation').checked;
   state.live = live;
+  $('live-processing-mode').disabled = true;
+  $('live-noise-suppression').disabled = true;
+  $('live-echo-cancellation').disabled = true;
+  $('live-speaker-count').disabled = true;
+  $('speaker-analysis-results').innerHTML = '';
+  show($('speaker-analysis-results'), false);
   button.disabled = true;
   button.textContent = 'Allow microphone…';
   setLiveStatus('Requesting microphone permission…');
   try {
-    live.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    live.stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      channelCount: 1,
+      echoCancellation: live.echoCancellation,
+      noiseSuppression: live.noiseSuppression,
+      autoGainControl: true
+    } });
+    if (live.audioMode === 'group') startGroupRecording(live);
+    else $('group-recording-status').textContent = 'Focus Mode is active. Switch to Group Mode before starting a session to enable speaker analysis.';
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     live.socket = new WebSocket(`${wsProtocol}//${location.host}/ws/live`);
     live.socket.onopen = () => setLiveStatus('Connecting to realtime speech service…');
@@ -287,6 +479,11 @@ async function startLiveTranslation() {
       if (message.type === 'ready') {
         try {
           await startLiveAudioGraph(live);
+          const trackSettings = live.stream?.getAudioTracks?.()[0]?.getSettings?.() || {};
+          const suppression = trackSettings.noiseSuppression === undefined
+            ? 'browser default' : (trackSettings.noiseSuppression ? 'noise suppression on' : 'noise suppression off');
+          setLiveStatus(live.audioMode === 'group' ? `Group Mode · ${suppression}` : `Focus Mode · ${suppression}`, true);
+          updateAudioModeUI();
           button.disabled = false;
         } catch (err) {
           setError(`Could not start microphone audio: ${err.message || 'audio setup failed'}`);
@@ -330,6 +527,7 @@ async function stopLiveTranslation(live) {
   if (!live || live.stopping) return;
   live.stopping = true;
   live.active = false;
+  await stopGroupRecording(live);
   await releaseLiveAudio(live);
   $('live-start-button').disabled = true;
   $('live-start-button').textContent = 'Finishing last phrase…';
@@ -442,6 +640,12 @@ function queueLiveVoice(live, item) {
 }
 
 $('live-start-button').addEventListener('click', startLiveTranslation);
+$('live-processing-mode').addEventListener('change', updateAudioModeUI);
+$('live-noise-suppression').addEventListener('change', updateAudioModeUI);
+$('live-echo-cancellation').addEventListener('change', updateAudioModeUI);
+$('live-speaker-count').addEventListener('change', updateAudioModeUI);
+$('analyze-speakers-button').addEventListener('click', analyzeGroupSpeakers);
+updateAudioModeUI();
 $('clear-live-button').addEventListener('click', () => {
   if (state.live && (state.live.active || state.live.stopping)) {
     setError('Stop live translation before clearing the current conversation context.');
